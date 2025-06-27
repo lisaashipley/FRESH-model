@@ -1,0 +1,208 @@
+---
+title: "FRESH-Cervid2"
+author: "DE Spalinger"
+date: "2023-11-02"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Fresh-Cervid model V8A
+# This version is the original RStudio version of the FRESH model, modified to exclude Foraging Time constraints
+# There is no constraint for foraging time in this model
+# So, no requirement for bite sizes or NDF concentrations of the foods
+
+
+#################
+#####  NOTES:
+################
+
+Before running the model, create a single folder that contains this R program and two additional folders for the data files, and for the outputs, for example:
+ "Deer Habitats" and "Deer Habitat Outputs" (without the quotation marks).You can change these folder names to whatever you prefer, but you will also have to change line 41 below to the new name you just created so R can find the data.  In the "Deer Habitats" folder, include the datafiles as specified below.  Each datafile is the data for a single habitat that you wish to examine. However, you can specify as many runs (i.e., changes in constraints on the animals) for each habitat as you wish by adding the new constraints in subsequent rows of the metadata sheet.
+ You will also have to modify the folder names for the outputs in lines 200 and 205 as appropriate. 
+###############
+
+To run the model, run each shaded block, in sequence, by clicking the green arrow at the right side of the block.  After running the first block (lines 8-10) and the second block (lines 30-34), you no longer need to run these blocks if you want to redo the analyses with modifications of the constraints, etc.  However, redoing the runs will over-write the datafiles in the "Deer Habitat Outputs" folder, so if you wish to keep these, you need to move the files to a different folder before running the program again.
+
+
+```{r libs}
+#Include the necessary library packages:
+library("lpSolve")
+library("openxlsx")
+```
+#Input Data
+#Modify the directories below as you see fit:  "excelpath" is a variable that identifies the directory/folder in which to keep your habitat data.  You may have one or more habitats in this directory, and the program will run each in turn.  It will produce output files that will be placed in a folder you identify/create in line 200 below.
+
+```{r inputs}
+# Read in a sample run:
+#
+excelpath="NEWGDeerRun/" ## Modify this to reflect the directory with all files to be analyzed
+habs = list.files(path=excelpath, pattern="xlsx", all.files=F, full.names=F, recursive=FALSE, ignore.case=T,include.dirs=FALSE)  ## If using convert XLS, ignore.case must be TRUE
+# the above writes a character vector of all the files in the above dir
+outname3=createWorkbook() # create a new workbook for the summary dataframe of all habitats
+addWorksheet(outname3, sheetName="summary")
+newsite=c() #create name for site
+
+```
+
+## Input Specifications
+# Sheet 1:
+  Sheet 1 Name = "data"
+  Nutritional Data required (with units):
+    Column 1: Species
+    Column 2: Biomass (kg/Ha)
+    Column 3: DE (Digestible Energy: kJ/g DM)
+    Column 4: DE.SD (standard deviation)
+    Column 5: DP (digestible protein: g/g DM)
+    Column 6: DP.SE (standard deviation)
+    Column 7: Max (maximum biomass of plant allowed to be consumed (% of total biomass))
+  
+  Sheet 2 Name = "metadata"
+    Column 1: SiteName (user specified name of habitat)
+    Column 2: scenario (user specified name of each scenario to be run)
+    Column 3: "blank"
+    Column 4: "blank"
+    Column 5: BodyMass (kg)
+    Column 6: MEReq (minimum metabolizable energy requirement of the animal: kJ/day)
+    Column 7: DPconst (minimum digestible protein required by the animal: g/day)
+    Column 8: DMIconst (maximum dry matter intake constraint: g DM/day)
+    
+#. Run the model:
+```{r model}
+for (m in 1:length(habs)){ # run for each habitat file in the folder
+outname=createWorkbook() # create a new workbook for the output dataframe of each habitat run
+addWorksheet(outname, sheetName="summary")
+excel.file = paste0(c(excelpath,habs[m]),collapse="")
+  ## creates a temporary path name for R to find the right file
+habitat=loadWorkbook(excel.file)
+# read in the plant data for the habitat:
+data = data.frame(readWorkbook(excel.file, sheet="data", startRow=1, colNames=TRUE))
+# read in the parameters (constraints) for the fresh deer model:
+parms=data.frame(readWorkbook(excel.file, sheet="metadata", startRow=1, cols=c(4:6),colNames=TRUE))
+#parameters are:  MEReq = metabolizable energy requirement, DMIconst = the dry matter intake constraint,  and DPconst = the digestible protein constraint
+# with the possibility of running one or more solutions with varying constraints
+#ForTime = foraging time constraint (min/day), but this constraint not implemented in this version
+site=readWorkbook(excel.file, sheet="metadata", startRow=1, cols=1,colNames=TRUE) # reads in the site name for this run
+scenario=readWorkbook(excel.file, sheet="metadata", startRow=1, cols=2,colNames=TRUE) # reads in the Scenarios for this run
+olddata=data.frame(data$Species,data$Biomass/3,data$DE,data$DP,data$Max)
+colnames(olddata)[1]="Species"
+colnames(olddata)[2]="Biomass"
+colnames(olddata)[3]="DE"
+colnames(olddata)[4]="DP"
+colnames(olddata)[5]="Max"
+# expand dataset to include variance in nutritional values:
+# for each plant in dataset, create 2 new "plants":
+spc1=0
+spc2=0
+de1=0
+de2=0
+dp1=0
+dp2=0
+max=0
+bio1=0
+bio2=0
+for(i in 1:nrow(data)){
+	spc1[i]=paste(data$Species[i],"-sdev",sep="")
+	spc2[i]=paste0(c(data$Species[i],"+sdev"),collapse="")
+	de1[i]=data$DE[i]-data$DE.SD[i]
+	de2[i]=data$DE[i]+data$DE.SD[i]
+	dp1[i]=data$DP[i]-data$DP.SD[i]
+	dp2[i]=data$DP[i]+data$DP.SD[i]
+	bio1[i]=data$Biomass[i]/3
+	bio2[i]=data$Biomass[i]/3
+	data$Biomass[i]=data$Biomass[i]/3
+	max[i]=data$Max[i]	
+}
+Species=c(spc1,spc2)
+DE=c(de1,de2)
+DP=c(dp1,dp2)
+Biomass=c(bio1,bio2)
+Max=c(max,max)
+newdata=data.frame(Species,Biomass,DE,DP,Max)
+fdata=rbind(olddata,newdata)
+f.obj=fdata$Biomass
+totm=0 # this is the max biomass allowed for each forage
+dirm=0
+conm=matrix(0,nrow=nrow(fdata),ncol=nrow(fdata)) #set the minimum amount allowed for any forage
+for(j in 1:nrow(fdata)){
+	totm[j]=fdata$Max[j]/100
+	dirm[j]="<="
+	for(k in 1:nrow(fdata)){
+		if(j==k) {
+			conm[j,k]=1
+		}
+		else {conm[j,k]=0}
+	}
+}
+# compute DE and CP constraints:
+for(n in 1:nrow(scenario)){	# repeat for different constraint settings in each habitat
+  newsite=site$SiteName
+de=(parms[n,1]/parms[n,3])/0.82 # converts the ME constraint into a DE constraint, assuming a metabolizable energy coefficient of 0.82
+dp=parms[n,2]
+cde=0
+cdp=0
+for(l in 1:nrow(fdata)){ #this loop calculates the de and dp for each food relative to the constrained requirements
+	cde[l]=fdata$DE[l]*fdata$Biomass[l]-fdata$Biomass[l]*de
+	cdp[l]=fdata$DP[l]*fdata$Biomass[l]-fdata$Biomass[l]*dp
+}
+f.con=c(cde,cdp)
+f.con=c(f.con,conm)
+f.con=matrix(f.con,nrow=(2+nrow(fdata)), byrow=TRUE)
+f.dir=c(">=",">=",dirm)
+f.rhs=c(0,0,totm)
+out=lp("max",f.obj,f.con,f.dir,f.rhs)$solution # solve the linear equations
+#
+# compute the summary stats for the run:
+#
+used=data.frame(out*100)
+colnames(used)[1]="Pct_Used"
+bioused=data.frame(out*fdata$Biomass)
+colnames(bioused)[1]="Biomass_Used"
+pctbioused=data.frame((bioused/sum(bioused))*100)
+colnames(pctbioused)[1]="Pct_Total_Biomass"
+totDE=sum(fdata$DE*bioused)
+deave=totDE/sum(bioused)
+totDP=sum(fdata$DP*bioused)
+dpave=totDP/sum(bioused)
+totBio=sum(bioused)
+MEintake=deave*parms[n,3]
+out2=data.frame(fdata,bioused,used,pctbioused)
+out3=data.frame(newsite,sum(fdata$Biomass),totBio,deave,MEintake,parms[n,1],dpave,parms[n,2],parms[n,3],totBio/(parms[n,3]/1000))
+colnames(out3)[1]="Habitat"
+colnames(out3)[2]="Total_Biomass"
+colnames(out3)[3]="Biomass_Used"
+colnames(out3)[4]="Ave DE"
+colnames(out3)[5]="Ave MEintake"
+colnames(out3)[6]="ME Const"
+colnames(out3)[7]="Ave DP"
+colnames(out3)[8]="DP Const"
+colnames(out3)[9]="DM Intake"
+colnames(out3)[10]="Animal_Days_per_Ha"
+outname2=paste("output",n,sep="")
+addWorksheet(outname,sheetName=outname2)
+writeData(outname,out2,sheet=outname2)
+if(n==1){
+  writeData(outname,out3,sheet="summary",startRow=1,startCol=1)
+  if(m==1){
+    out4=out3
+  }else{
+    out4=rbind(out4,out3)
+  }
+}else
+{
+  out4=rbind(out4,out3)
+  writeData(outname,out3,sheet="summary",startRow=n+1,startCol=1,colNames=FALSE)
+}
+} #end scenario loop
+site2=paste0(c(site,".xlsx"),collapse="")
+result=paste0(c("NEWGDeerOutput/",site2),collapse="")
+saveWorkbook(outname,result,overwrite=TRUE)
+} #end habitat loop
+#
+writeData(outname3,out4,sheet="summary",startRow=1,startCol=1)
+saveWorkbook(outname3,"NEWGDeerOutput/RunSummary.xlsx",overwrite=TRUE)
+
+```
+
